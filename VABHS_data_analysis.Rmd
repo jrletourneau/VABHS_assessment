@@ -1,0 +1,35 @@
+---
+title: "VABHS Assessment"
+author: "Jeffrey Letourneau"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+
+# Purpose
+Build and evaluate a predictive model of one-year survival after diagnosis with Non-small cell lung cancer (NSCLC).
+
+# Load libraries
+```{r}
+# tidyverse contains dplyr for manipulating dataframes, ggplot2 for plotting, and other useful packages
+library(tidyverse) 
+
+# Packages used for random forest model
+
+
+# Packages I might use
+#library(RColorBrewer)
+#library(ggtext)
+#library(cowplot)
+
+
+# Set preferred ggplot theme
+theme_set(theme_bw() +
+            theme(axis.text = element_text(color = "black"),
+                  axis.ticks = element_line(color = "black"),
+                  plot.title = element_text(hjust = 0.5)))
+
+# Set seed for reproducibility.
+set.seed(123)
+
+```
+
