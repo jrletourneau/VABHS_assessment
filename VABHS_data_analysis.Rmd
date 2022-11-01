@@ -9,11 +9,17 @@ output: html_notebook
 Build and evaluate a predictive model of one-year survival after diagnosis with Non-small cell lung cancer (NSCLC).
 
 # Load libraries
-```{r}
+```{r, results = F}
 # tidyverse contains dplyr for manipulating dataframes, ggplot2 for plotting, and other useful packages
 library(tidyverse) 
 
 # Packages used for random forest model
+library(randomForest)
+library(caret)
+library(ROCR)
+library(pROC)
+library(MLmetrics)
+library(MLeval)
 
 
 # Packages I might use
@@ -31,5 +37,57 @@ theme_set(theme_bw() +
 # Set seed for reproducibility.
 set.seed(123)
 
+```
+
+# Load and inspect data
+```{r}
+clinical <- read.csv("data/clinical.csv")
+genomics <- read.csv("data/genomics.csv")
+
+# Merge datasets
+## Make genomics in same format as clinical (participants are rows, variables are columns) 
+genomics <- genomics %>%
+  mutate(value = "mutation") %>%
+  spread(key = Gene, value = value)
+  
+## Merge by ID
+merge_df <- clinical %>%
+  left_join(genomics) %>%
+  replace(is.na(.), "WT")
+
+# Inspect for possible errors/duplicates
+str(merge_df)
+n_distinct(merge_df$ID) == nrow(merge_df) # TRUE --> good, no duplicate participants
+unique(clinical$Outcome) # "Alive" or "Dead"
+
+## These seem like places typos could have happened
+unique(merge_df$`T`) # no issues
+unique(merge_df$Stage) # there is a "1B" that should be "IB"
+unique(merge_df$Primary.Site) # "Righ Upper Lobe" should be "Right Upper Lobe"
+unique(merge_df$Histology) # no issues
+
+## Other changes needed:
+### "UNK" and "NULL" --> NA for T, N, M, Tumor.Size
+### Make Radiation a categorical variable instead of numeric
+
+merge_df <- merge_df %>%
+  mutate(Stage = case_when(Stage == "1B" ~ "IB", TRUE ~ Stage),
+         Primary.Site = case_when(Primary.Site == "Righ Upper Lobe" ~ "Right Upper Lobe",
+                                  TRUE ~ Primary.Site),
+         Radiation = as.character(Radiation),
+         Radiation = case_when(Radiation == 0 ~ "no", Radiation == 5 ~ "yes"),
+         `T` = na_if(`T`, "UNK"),
+         N = na_if(N, "NULL"),
+         M = na_if(M, "NULL"),
+         Tumor.Size = na_if(Tumor.Size, "NULL"))
+
+merge_df
+
+```
+
+
+# Print session info
+```{r}
+sessionInfo()
 ```
 
