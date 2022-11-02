@@ -2,7 +2,9 @@
 title: "VABHS Assessment"
 author: "Jeffrey Letourneau"
 date: "`r Sys.Date()`"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 # Purpose
@@ -12,6 +14,7 @@ Build and evaluate a predictive model of one-year survival after diagnosis with 
 ```{r, results = F}
 # tidyverse contains dplyr for manipulating dataframes, ggplot2 for plotting, and other useful packages
 library(tidyverse) 
+library(RColorBrewer)
 
 # Packages used for random forest model
 library(randomForest)
@@ -21,20 +24,13 @@ library(pROC)
 library(MLmetrics)
 library(MLeval)
 
-
-# Packages I might use
-#library(RColorBrewer)
-#library(ggtext)
-#library(cowplot)
-
-
 # Set preferred ggplot theme
 theme_set(theme_bw() +
             theme(axis.text = element_text(color = "black"),
                   axis.ticks = element_line(color = "black"),
                   plot.title = element_text(hjust = 0.5)))
 
-# Set seed for reproducibility.
+# Set seed for reproducibility
 set.seed(123)
 
 ```
@@ -56,7 +52,7 @@ merge_df <- clinical %>%
   replace(is.na(.), "WT")
 
 # Inspect for possible errors/duplicates
-str(merge_df)
+str(merge_df[,1:16])
 n_distinct(merge_df$ID) == nrow(merge_df) # TRUE --> good, no duplicate participants
 unique(clinical$Outcome) # "Alive" or "Dead"
 
@@ -70,6 +66,7 @@ unique(merge_df$Histology) # no issues
 ### "UNK" and "NULL" --> NA for T, N, M, Tumor.Size
 ### Make Radiation a categorical variable instead of numeric
 
+# Clean up the merged dataframe typos are corrected and missing data is treated as NA
 merge_df <- merge_df %>%
   mutate(Stage = case_when(Stage == "1B" ~ "IB", TRUE ~ Stage),
          Primary.Site = case_when(Primary.Site == "Righ Upper Lobe" ~ "Right Upper Lobe",
@@ -78,10 +75,181 @@ merge_df <- merge_df %>%
          Radiation = case_when(Radiation == 0 ~ "no", Radiation == 5 ~ "yes"),
          `T` = na_if(`T`, "UNK"),
          N = na_if(N, "NULL"),
+         N = as.numeric(N),
          M = na_if(M, "NULL"),
+         M = as.numeric(M),
          Tumor.Size = na_if(Tumor.Size, "NULL"))
 
 merge_df
+
+```
+
+# Revising and reducing features
+```{r}
+# Add new variables
+# one_year_survival: categorical variable to represent survival at one year as a binary
+# total_meta: total number of metastases (sum of N + M)
+# total_tumors: sum of N + M + Num.Primaries
+
+merge_df <- merge_df %>%
+  mutate(one_year_survival = case_when(Survival.Months > 12 ~ "Survived",
+                                       Survival.Months <= 12 ~ "Deceased"))
+
+merge_df$total_meta <- rowSums(merge_df[,c("N", "M")], na.rm = T)
+merge_df$total_tumors <- rowSums(merge_df[,c("Num.Primaries", "N", "M")], na.rm = T)
+
+merge_df <- merge_df %>%
+  relocate(one_year_survival:total_tumors, .after = Outcome)
+
+
+# Reduce features for model
+## Remove genes without mutations in at least 10% of participants
+cutoff <- 0.1 * nrow(clinical)
+
+genes_to_keep <- read.csv("data/genomics.csv") %>%
+  group_by(Gene) %>%
+  summarize(count = length(Gene)) %>%
+  filter(count > cutoff) %>%
+  pull(Gene)
+
+merge_df <- merge_df %>%
+  dplyr::select(ID, one_year_survival, total_meta, total_tumors, Age:Num.Mutations, all_of(genes_to_keep))
+
+
+```
+
+# Handle missing data
+There are two main ways we can handle this: (a) remove participants with NAs, or (b) impute NA values. Neither is ideal - (b) essentially sets NAs to the median/mode value for each feature.
+```{r}
+# How many rows have no NAs
+nrow(merge_df[complete.cases(merge_df),]) # only 33, not good!
+
+
+# Random forest needs everything to be numeric or factor
+merge_df_for_rf <- merge_df[,c(3:ncol(merge_df), 2)] %>%
+  mutate(one_year_survival = factor(one_year_survival),
+         Age = as.numeric(Age),
+         Grade = as.numeric(Grade),
+         Num.Primaries = as.numeric(Num.Primaries),
+         `T` = factor(`T`),
+         Radiation = factor(Radiation),
+         Stage = factor(Stage),
+         Primary.Site = factor(Primary.Site),
+         Histology = factor(Histology),
+         Tumor.Size = as.numeric(Tumor.Size),
+         Num.Mutated.Genes = as.numeric(Num.Mutated.Genes),
+         Num.Mutations = as.numeric(Num.Mutations),
+         CDKN2A = factor(CDKN2A),
+         KRAS_Col1 = factor(KRAS_Col1),
+         MSH2 = factor(MSH2),
+         STK11 = factor(STK11),
+         TP53_Col1 = factor(TP53_Col1),
+         TSC2 = factor(TSC2))
+
+merge_df_for_rf <- rfImpute(one_year_survival ~ ., merge_df_for_rf)
+  
+
+```
+
+
+# Build the random forest model
+```{r}
+
+# create training/testing split
+data <- merge_df_for_rf
+
+# Train the model
+fitControl <- trainControl(method = "LOOCV",
+                           summaryFunction = prSummary,
+                           classProbs = T,
+                           savePredictions = TRUE) 
+rf <- train(one_year_survival ~ ., data = data,
+            method = "rf",
+            trControl = fitControl,
+            tuneGrid = expand.grid(.mtry=sqrt(ncol(data)-1)), # default val of sqrt(# features)
+            verbose = FALSE)
+
+# Store the scaled importance values
+importance_df <- varImp(rf)$importance %>% as.matrix()
+
+# Summarize confusion matrix
+confusion <- confusionMatrix(data = rf$pred$pred, reference = rf$pred$obs,
+                             mode = "prec_recall", positive = "Survived")
+
+# Pull resulting metrics
+accuracy <- confusion$overall["Accuracy"]
+kappa <- confusion$overall["Kappa"]
+pval <- confusion$overall["AccuracyPValue"]
+
+# Plotting ROC curve
+plots <- evalm(rf)
+roc.data <- data.frame(SENS=plots$roc$data$SENS, FPR=plots$roc$data$FPR,
+                           point=1:length(plots$roc$data$SENS))
+auc <- plots$stdres$`Group 1`[13,1]
+
+```
+
+# Plot results
+```{r}
+# ROC curve
+roc_plot <- ggplot(roc.data, aes(x=FPR, y=SENS)) +
+  geom_line(color="red") +
+  labs(x="False Positive Rate", y="True Positive Rate") +
+  geom_abline(intercept = 0, slope = 1, color="darkgray") +
+  annotate(geom="text", x=0.7, y=0.25, label=paste0("AUC = ", round(auc, 3), "\n",
+                                                    "Accuracy = ", round(accuracy, 3), "\n",
+                                                    "Kappa = ", round(kappa,3), "\n",
+                                                    "Mean p(Acc < NIR) = ", round(pval, 3)))
+#ggsave("plots/roc_curve.png", roc_plot, height = 3, width = 4)
+
+roc_plot
+
+# Confusion matrix
+confusion_plot <- ggplot(as.data.frame(confusion$table), aes(x = Prediction, y = Reference)) +
+  geom_tile(aes(fill = Freq)) +
+  geom_text(aes(label = Freq), size = 10) +
+  scale_fill_distiller(palette = "RdYlGn", direction = 1) +
+  theme(legend.position = "none") +
+  labs(x = "Predicted one-year survival", y = "Actual one-year survival")
+#ggsave("plots/confusion_matrix.png", confusion_plot, height = 3, width = 4)
+
+confusion_plot
+
+# Plot most important features
+top10 <- importance_df %>% 
+  as.data.frame() %>%
+  arrange(desc(Overall)) %>%
+  slice_max(Overall, n = 10) %>%
+  mutate(feature = rownames(.)) %>%
+  mutate(feature = factor(feature, levels = rev(feature)))
+
+importance_plot <- ggplot(top10, aes(x=Overall, y=feature)) +
+  geom_col() +
+  labs(x="Importance", y = "Feature")
+#ggsave("plots/importance_top10.png", importance_plot, height = 3, width = 4)
+
+importance_plot
+
+```
+
+# Plot individual features
+```{r}
+# Here, I operate off the original (non-imputed) data
+
+M_plot <- ggplot(merge_df, aes(x = factor(M), y = one_year_survival)) +
+  geom_point(position = position_jitter(height = 0.2, width = 0.2), alpha = 0.5) +
+  labs(x = "Number of distant metastases (M)", y = "One-year survival")
+
+#ggsave("plots/M.png", M_plot, height = 3, width = 6)
+
+M_plot
+
+hist_plot <- ggplot(merge_df, aes(x = Histology, y = one_year_survival)) +
+  geom_point(position = position_jitter(height = 0.2, width = 0.2), alpha = 0.5) +
+  labs(x = "Tumor histology", y = "One-year survival")
+#ggsave("plots/histology.png", hist_plot, height = 3, width = 6)
+
+hist_plot
 
 ```
 
