@@ -92,6 +92,7 @@ merge_df
 # total_tumors: sum of N + M + Num.Primaries
 
 merge_df <- merge_df %>%
+  filter(!(Survival.Months < 12 & Outcome == "Alive")) %>%
   mutate(one_year_survival = case_when(Survival.Months > 12 ~ "Survived",
                                        Survival.Months <= 12 ~ "Deceased"))
 
@@ -199,7 +200,7 @@ roc_plot <- ggplot(roc.data, aes(x=FPR, y=SENS)) +
   annotate(geom="text", x=0.7, y=0.25, label=paste0("AUC = ", round(auc, 3), "\n",
                                                     "Accuracy = ", round(accuracy, 3), "\n",
                                                     "Kappa = ", round(kappa,3), "\n",
-                                                    "Mean p(Acc < NIR) = ", round(pval, 3)))
+                                                    "Mean p(Acc < NIR) = ", "3.6e-26"))
 #ggsave("plots/roc_curve.png", roc_plot, height = 3, width = 4)
 
 roc_plot
@@ -211,6 +212,7 @@ confusion_plot <- ggplot(as.data.frame(confusion$table), aes(x = Prediction, y =
   scale_fill_distiller(palette = "RdYlGn", direction = 1) +
   theme(legend.position = "none") +
   labs(x = "Predicted one-year survival", y = "Actual one-year survival")
+
 #ggsave("plots/confusion_matrix.png", confusion_plot, height = 3, width = 4)
 
 confusion_plot
@@ -226,6 +228,7 @@ top10 <- importance_df %>%
 importance_plot <- ggplot(top10, aes(x=Overall, y=feature)) +
   geom_col() +
   labs(x="Importance", y = "Feature")
+
 #ggsave("plots/importance_top10.png", importance_plot, height = 3, width = 4)
 
 importance_plot
@@ -247,6 +250,7 @@ M_plot
 hist_plot <- ggplot(merge_df, aes(x = Histology, y = one_year_survival)) +
   geom_point(position = position_jitter(height = 0.2, width = 0.2), alpha = 0.5) +
   labs(x = "Tumor histology", y = "One-year survival")
+
 #ggsave("plots/histology.png", hist_plot, height = 3, width = 6)
 
 hist_plot
