@@ -1,0 +1,103 @@
+---
+title: "VABHS 2"
+output: html_notebook
+---
+
+# Purpose: whether albumin levels at diagnosis may be predictive of 1-year survival for cancer
+
+# Load libraries
+```{r}
+# tidyverse contains dplyr for manipulating dataframes, ggplot2 for plotting, and other useful packages
+library(tidyverse) 
+#library(RColorBrewer)
+
+# lmer
+library(lme4)
+library(lmerTest)
+
+# Set preferred ggplot theme
+theme_set(theme_bw() +
+            theme(axis.text = element_text(color = "black"),
+                  axis.ticks = element_line(color = "black"),
+                  plot.title = element_text(hjust = 0.5)))
+
+# Set seed for reproducibility
+set.seed(123)
+
+
+```
+
+# Load and clean data
+```{r}
+labs <- read.csv("data/labs.csv")
+
+# 0 = alive, 1 = dead
+## Going to define One Year Survival as alive at day 365
+onc <- read.csv("data/onc.csv") %>%
+  filter(complete.cases(.)) %>%
+  mutate(DaysFromDiagnosistoFollowup = DaysFromAnchorDateToFollowUp - DaysFromAnchorDateToDiagnosisDate) %>%
+  filter(!(Dead == 0 & DaysFromDiagnosistoFollowup < 365)) %>%
+  mutate(OneYearSurvival = case_when(Dead == 0 ~ "Alive",
+                                     Dead == 1 & DaysFromDiagnosistoFollowup > 365 ~ "Dead",
+                                     Dead == 1 & DaysFromDiagnosistoFollowup <= 365 ~ "Dead"))
+
+unique(onc$Disease)
+
+# Sort into different types of cancer?
+
+# Incorporate albumin levels
+TestNames <- unique(labs$LabChemTestName)
+
+## Some of these test names have spaces and weird formatting
+### Identify the name of albumin variable
+TestNames_select <- TestNames[grep("ALB", TestNames, ignore.case = T)]
+
+## Variables to definitely omit:
+### "CANDIDA ALBICANS", albumin/creatinin ratio
+
+AlbuminTestNames <- c("ALBUMIN", "ALBUMIN " )
+
+## Select only albumin, fix differences in units
+labs <- labs %>%
+  filter(LabChemTestName %in% AlbuminTestNames) %>%
+  mutate(LabChemTestName = "ALBUMIN",
+  ValueAdj = case_when(Units == "ng/ul" ~ Value,
+                       Units == "ug/ul" ~ Value * 1000,
+                       Units == "ng/ml" ~ Value / 1000)) %>%
+  right_join(onc) %>%
+  mutate(DaysFromDiagnosistoSpecimen = DaysFromAnchorDateToLabChemSpecimenDate - DaysFromAnchorDateToDiagnosisDate)
+
+
+CloseDate <- labs %>%
+  group_by(ID) %>%
+  summarize(min = min(abs(DaysFromDiagnosistoSpecimen))) %>%
+  mutate(label = paste0(ID, "_", min))
+
+labs <- labs %>%
+  mutate(label2 = paste0(ID, "_", DaysFromDiagnosistoSpecimen)) %>%
+  left_join(CloseDate) %>%
+  filter(label == label2)
+
+## Removed ones might not have lab data available
+### What about NAs though?
+  
+
+```
+
+
+# Test albumin levels
+```{r}
+labs %>%
+  filter(!is.na(min)) %>%
+  lm(ValueAdj ~ OneYearSurvival, data = .) %>%
+  summary() # p = 0.639 
+
+# Visualize
+plot <- ggplot(labs, aes(x = OneYearSurvival, y = ValueAdj)) +
+  geom_point(position = position_jitter(height = 0, width = 0.05)) +
+  facet_wrap(~Disease)
+
+
+```
+
+
